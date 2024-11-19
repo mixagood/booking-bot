@@ -39,6 +39,13 @@ const bot = new TelegramBot(token, { polling: true });
 //     }
 // }
 
+const timeSlots = [];
+for (let i = 8; i < 21; i++) {
+    timeSlots.push(i.toString() + "-00");
+    timeSlots.push(i.toString() + "-30");
+}
+
+
 async function getAuthToken() {
     try {
         const formData = new URLSearchParams();
@@ -56,7 +63,7 @@ async function getAuthToken() {
 
         if (response.ok) {
             const data = await response.json();
-            return data.access_token; // Предполагается, что сервер возвращает токен в этом поле
+            return data.access_token;
         } else {
             console.error('Ошибка аутентификации:', response.detail);
             return null;
@@ -67,7 +74,7 @@ async function getAuthToken() {
     }
 }
 
-
+// Занятые комнаты
 async function getReservations(token) {
     
     const response = await fetch('http://127.0.0.1:8000/reservations', {
@@ -84,6 +91,13 @@ async function getReservations(token) {
 }
 
 
+async function getRooms() {
+
+//   const response = await fetch('http://127.0.0.1:8000/meeting_rooms/');
+//    const jsonResponse = await response.json();
+    jsonResponse = [{"id":1, "descr": "205"}, {"id":2, "descr":"206"}, {"id":3, "descr":"207"}, {"id":4, "descr":"208"}]
+    return jsonResponse;
+}
 
 
 // Команда /start
@@ -97,12 +111,50 @@ bot.onText(/\/roomlist/, async msg => {
 
     const chatId = msg.chat.id;
     
-    const response = await fetch('http://127.0.0.1:8000/meeting_rooms/');
-    const jsonResponse = await response.json();
-    const jsonString = JSON.stringify(jsonResponse, null, 2);
+    const jsonResponse = await getRooms();
 
-    await bot.sendMessage(chatId, jsonString);
+    const buttons = jsonResponse.map(item => {
+        return [{text: item.descr, callback_data: ("room:" + item.id)}];
+    });
+
+    const options = {
+        reply_markup: {
+            inline_keyboard: buttons,
+        },
+    };
+
+    await bot.sendMessage(chatId, 'Choose your hero', options);
 });
+
+
+bot.on('callback_query', (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+
+    const data = callbackQuery.data;
+
+    const [action, arg] = data.split(':', 2);
+    if (action == 'room') {
+
+        buttons = timeSlots.map(item => {
+            return [{text: item, callback_data: ("booktime:" + `${arg};` + item)}]
+        });
+
+        const options = {
+            reply_markup: {
+                inline_keyboard: buttons,
+            },
+        };
+
+
+        bot.sendMessage(chatId, `Выбрана комната ${arg}`, options);
+
+    } else if (action == 'booktime') {
+        const [room, time] = arg.split(';', 2);
+
+        bot.sendMessage(chatId, `Забронирована комната ${room} на время ${time}`);
+    }
+
+})
 
 
 bot.onText(/\/reservations/, async (msg) => {
@@ -128,7 +180,7 @@ bot.onText(/\/mybookings/, async msg => {
 
 bot.onText(/\/employees/, async msg => {
     const chatId = msg.chat.id;
-    await bot.sendMessage(chatId, "Список сотрудников, с которыми можно попросить встречу");
+    await bot.sendMessage(chatId, "Список сотрудников, с которыми можно попросить встречу (заглушка)");
 });
 
 
