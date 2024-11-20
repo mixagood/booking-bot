@@ -6,38 +6,16 @@ const token = '7735930269:AAFmKgdc-JlyN_I-yL9hR7N1TgCi3ZyOljY';
 // Создайте экземпляр бота
 const bot = new TelegramBot(token, { polling: true });
 
-// Auth
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-// async function getAuthToken() {
-//     try {
-//         const credentials = {
-//             username: 'example@email.com',
-//             password: '1234567890'
-//         };
-
-//         // Запрос
-//         const response = await fetch('http://127.0.0.1:8000/auth/jwt/login', {
-//             method: 'POST',
-//             headers: {
-//                 'Content-Type': 'application/json'
-//             },
-//             body: JSON.stringify(credentials)
-//         });
-
-//         if (response.ok) {
-//             const data = await response.json();
-//             const checkdata = JSON.stringify(data);
-//             return data.access_token;
-//         } else {
-//             console.error('Ошибка аутентификации', response.detail);
-//             return null;
-//         }
-
-//     } catch (error) {
-//         console.error('Error', error);
-//         return null;
-//     }
-// }
+const routes = {
+    'room:bookroom': (chatId) => {
+        bot.sendMessage(chatId, 'Бронирование комнаты')
+    },
+    'room': (chatId) => {
+        bot.sendMessage(chatId, 'Расписание комнаты')
+    }
+}
 
 const timeSlots = [];
 for (let i = 8; i < 21; i++) {
@@ -46,6 +24,7 @@ for (let i = 8; i < 21; i++) {
 }
 
 
+// Auth
 async function getAuthToken() {
     try {
         const formData = new URLSearchParams();
@@ -90,22 +69,67 @@ async function getReservations(token) {
     return jsonResponse;
 }
 
+async function getMeetingRooms(token) {
+    
+    const response = await fetch('http://127.0.0.1:8000/meeting_rooms', {
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+        }
+    });
 
-async function getRooms() {
+    const jsonResponse = await response.json();
 
-//   const response = await fetch('http://127.0.0.1:8000/meeting_rooms/');
-//    const jsonResponse = await response.json();
-    jsonResponse = [{"id":1, "descr": "205"}, {"id":2, "descr":"206"}, {"id":3, "descr":"207"}, {"id":4, "descr":"208"}]
     return jsonResponse;
 }
 
+
+async function bookRoom(token, roomId, fromReserve, toReserve) {
+
+    const reqBody = {
+        room_id : roomId,
+        from_reserve : fromReserve,
+        to_reserve : toReserve
+    }
+
+    try {
+    const response = await fetch('http://127.0.0.1:8000/reservations/', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(reqBody)
+    });
+
+        if (!response.ok) {
+            const errorData = await response.json(); // Чтение данных об ошибке
+            throw new Error(`Ошибка ${response.status}: ${errorData.message || response.statusText}`);
+        }
+
+        return await response.json();
+        
+    } catch (error) {
+        console.error("Ошибка при бронировании комнаты:", error.message);
+        throw error; // Пробрасываем ошибку дальше для обработки
+    }
+}
+
+
+async function getRooms() {
+
+    // const response = await fetch('http://127.0.0.1:8000/meeting_rooms/');
+    const jsonResponse = await getMeetingRooms();
+    // jsonResponse = [{"id":1, "descr": "205"}, {"id":2, "descr":"206"}, {"id":3, "descr":"207"}, {"id":4, "descr":"208"}]
+    return jsonResponse;
+}
 
 // Команда /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(chatId, 'Привет! Я бот для бронирования встреч в больнице 24!');
 });
-
 
 bot.onText(/\/roomlist/, async msg => {
 
@@ -114,7 +138,7 @@ bot.onText(/\/roomlist/, async msg => {
     const jsonResponse = await getRooms();
 
     const buttons = jsonResponse.map(item => {
-        return [{text: item.descr, callback_data: ("room:" + item.id)}];
+        return [{text: item.id + " " + item.description, callback_data: ("room:" + item.id)}];
     });
 
     const options = {
@@ -123,16 +147,18 @@ bot.onText(/\/roomlist/, async msg => {
         },
     };
 
-    await bot.sendMessage(chatId, 'Choose your hero', options);
+    await bot.sendMessage(chatId, 'Выберите комнату', options);
 });
 
 
 bot.on('callback_query', (callbackQuery) => {
-    const chatId = callbackQuery.message.chat.id;
 
+    const chatId = callbackQuery.message.chat.id;
     const data = callbackQuery.data;
 
     const [action, arg] = data.split(':', 2);
+
+
     if (action == 'room') {
 
         buttons = timeSlots.map(item => {
@@ -145,8 +171,7 @@ bot.on('callback_query', (callbackQuery) => {
             },
         };
 
-
-        bot.sendMessage(chatId, `Выбрана комната ${arg}`, options);
+        bot.sendMessage(chatId, `Выбрана комната ${arg}. Свободные слоты:`, options);
 
     } else if (action == 'booktime') {
         const [room, time] = arg.split(';', 2);
@@ -183,20 +208,6 @@ bot.onText(/\/employees/, async msg => {
     await bot.sendMessage(chatId, "Список сотрудников, с которыми можно попросить встречу (заглушка)");
 });
 
-
-bot.onText(/\/tokentest/, async msg => {
-    const chatId = msg.chat.id;
-
-    const token = await getAuthToken();
-    if (!token) {
-        await bot.sendMessage(chatId, 'Не удалось выполнить аутентификацию.');
-        return;
-    }
-
-    await bot.sendMessage(chatId, token);
-});
-
-
 // Error
 bot.on("polling_error", err => console.log(err.data.error.message));
 
@@ -218,10 +229,6 @@ const commands = [
     {
         command: "employees",
         description: "Сотрудники"
-    },
-    {
-        command: "tokentest",
-        description: "tokentest"
     },
     {
         command: "reservations",
