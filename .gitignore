@@ -33,3 +33,5 @@ out/
 
 # API responses or cached files
 cache/
+
+testfile.js
