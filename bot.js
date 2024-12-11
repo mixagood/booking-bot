@@ -1,127 +1,128 @@
 const TelegramBot = require('node-telegram-bot-api');
+
 const { token } = require('./config/config');
+
+const { getAuthToken,  getReservationsByRoom, getUserReservations, 
+    getReservations, getMeetingRooms, bookRoom, registerUser, deleteReservation} = require('./api/api')
+
+const {getCachedDatesOfCurrentMonth, getCachedTimeslotsCurMonth, groupButtons} = require('./utils/utils')
+
 
 // Создайте экземпляр бота
 const bot = new TelegramBot(token, { polling: true });
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-let timeSlots = [];
-const dayStart = 8;
-const dayEnd = 21;
+const userStates = {}; // Хранилище состояний пользователей
 
-function getTimeSlots(year, month, date) {
-    timeSlots = [];
-
-    for (let i = dayStart; i < dayEnd; i++) {
-
-        const today = new Date(year, month, date);
-        today.setHours(i);
-        today.setMinutes(0);
-        today.setSeconds(0);
-        timeSlots.push(today);
+async function initUserState(userId) {
+    userStates[userId] = {
+        prevState: '',
+        roomId : undefined,
+        selectedYear : undefined, 
+        selectedMonth : undefined, 
+        selectedDate : undefined,
+        firstSlotId : undefined,
+        secondSlotId : undefined
     }
-    const today = new Date(year, month, date);
-    today.setHours(dayEnd);
-    today.setMinutes(0);
-    today.setSeconds(0);
-    timeSlots.push(today)
-
-    return timeSlots;
-}
-
-function getDatesOfCurrentMonth() {
-    const dates = [];
-
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth();
-
-    // 0 - последний день предыдущего месяца
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-    for (let day = now.getDate(); day <= daysInMonth; day++) {
-        dates.push(new Date(year, month, day));
-    }
-
-    return dates;
 }
 
 
 let reservedTime = []
 
 const routes = {
+    'back': (chatId, userId) => {
+        
+    },
     'displayrooms': async (chatId, userId, selectedYear, selectedMonth, selectedDate) => {
 
+        userStates[userId].selectedYear = selectedYear;
+        userStates[userId].selectedMonth = selectedMonth;
+        userStates[userId].selectedDate = selectedDate;
+
+        console.log(userStates[userId])
+
         const jsonResponse = await getMeetingRooms();
+
+        console.log(jsonResponse);
+
         const buttons = jsonResponse.map(item => {
-            return [{
-                text: item.id + " " + item.description,
-                callback_data: (`selFirstTime:${item.id}:${selectedYear}:${selectedMonth}:${selectedDate}`)
-            }];
+
+            return {
+                text: `${item.id} - ${item.description}`,
+                callback_data: (`selFirstTime:${item.id}`)
+            };
         });
 
-        const options = {
-            reply_markup: {
-                inline_keyboard: buttons,
-            },
-        };
+        const options = groupButtons(buttons, 2);
 
         await bot.sendMessage(chatId, 'Выберите комнату', options);
     },
     'delbooking': async (chatId, userId, reservationId) => {
+        console.log(userStates[userId])
 
-        const url = `http://127.0.0.1:8000/reservations/${reservationId}`;
         const access_token = await getAuthToken(userId);
-
-        const response = await fetch(url,
-            {
-                method: 'DELETE',
-                headers: {
-                    'Authorization': `Bearer ${access_token}`,
-                    'Content-Type': 'application/json'
-                }
-            });
+        const response = deleteReservation(chatId, reservationId, access_token);
 
         if (response.ok) {
             bot.sendMessage(chatId, "Бронь удалена");
-
+    
         } else {
             bot.sendMessage(chatId, "Бронь не удалена");
         }
 
     },
-    'book': async (chatId, userId, roomId, fromReserveId, toReserveId) => {
+    'book': async (chatId, userId, toReserveId) => {
+
+        userStates[userId].secondSlotId = toReserveId;
+
+        console.log(userStates[userId])
+
+        const date = userStates[userId].selectedDate
+        const roomId = userStates[userId].roomId
+        const startId = userStates[userId].firstSlotId;
+        const endId = userStates[userId].secondSlotId;
+
+        const daySlots = getCachedTimeslotsCurMonth()[date];
+        const fromReserve = daySlots[startId];
+        const toReserve = daySlots[endId];
+
         const access_token = await getAuthToken(userId);
-        const reservation = await bookRoom(access_token, roomId, timeSlots[fromReserveId], timeSlots[toReserveId]);
+
+        console.log(daySlots)
+        console.log(toReserve);
+        console.log(fromReserve);
+
+        const reservation = await bookRoom(access_token, roomId, fromReserve, toReserve);
 
         let message = "<Бронирование успешно>:\n\n";
         message += `   📍 Комната: ${reservation.meetingroom_id}\n`;
         message += `   🕒 С: ${formatDateTime(reservation.from_reserve)}\n`;
         message += `   🕒 По: ${formatDateTime(reservation.to_reserve)}\n`;
-        // message += `   👤 Пользователь: ${reservation.user_id}\n`;
-        // message += `   🔖 ID бронирования: ${reservation.id}\n\n`;
 
         bot.sendMessage(chatId, message);
     },
+
     // Выбор времени начала бронирования
-    'selFirstTime': async (chatId, userId, roomId, selectedYear, selectedMonth, selectedDate) => {
+    'selFirstTime': async (chatId, userId, roomId) => {
+
+        userStates[userId].roomId = roomId;
+
+        console.log(userStates[userId])
 
         // get room schedule and select first date
         let reservations = await getReservationsByRoom(roomId);
 
         // Оставляем бронирования только на выбранную дату
         reservations = reservations.filter((res) => {
-
             let check = new Date(res.from_reserve);
-
             return (
-                selectedDate == check.getDate() &&
-                selectedMonth == check.getMonth() &&
-                selectedYear == check.getFullYear())
+                userStates[userId].selectedDate == check.getDate() &&
+                userStates[userId].selectedMonth == check.getMonth() &&
+                userStates[userId].selectedYear == check.getFullYear())
         });
 
-        reservedTime = []
+        reservedTime = [];
 
         reservations.forEach((reservation, index) => {
 
@@ -142,14 +143,19 @@ const routes = {
 
         // Преобразуем timeSlots в кнопки
         // Нужно передавать индексы, а не Date()
-        const timeSlots = getTimeSlots(selectedYear, selectedMonth, selectedDate);
+
+        // Не будет работать, надо за день
+        // Берем временные слоты за конкретный день
+        const timeSlots = getCachedTimeslotsCurMonth()[userStates[userId].selectedDate];
+
         const buttons = timeSlots.slice(0, -1).map((slot, index) => {
 
             let buttonText = `${slot.getHours()} - ${slot.getMinutes()} ✅`;
-            let callbackData = `selSecondTime:${roomId}:${index}`;
+            let callbackData = `selSecondTime:${index}`;
 
             for (let i = 0; i < reservedTime.length; i++) {
-                if (slot >= reservedTime[i].left && slot < reservedTime[i].right) {
+                if ((slot >= reservedTime[i].left && slot < reservedTime[i].right) || 
+            slot < Date.now()) {
                     // Слот недоступен
                     buttonText = buttonText.replace('✅', '⛔');
                     callbackData = 'disabled';
@@ -163,18 +169,7 @@ const routes = {
             }
         });
 
-        // Группируем кнопки по 3 в ряд
-        const groupedButtons = [];
-        for (let i = 0; i < buttons.length; i += 4) {
-            groupedButtons.push(buttons.slice(i, i + 4));
-        }
-
-        // Опции с разметкой для Telegram
-        const options = {
-            reply_markup: {
-                inline_keyboard: groupedButtons,
-            },
-        };
+        const options = groupButtons(buttons, 4);
 
         bot.sendMessage(chatId, `Бронирование комнаты ${roomId}
 
@@ -186,7 +181,13 @@ const routes = {
 
     },
     // Выбор времени конца бронирования
-    'selSecondTime': async (chatId, userId, roomId, firstSlotId) => {
+    'selSecondTime': async (chatId, userId, firstSlotId) => {
+
+        userStates[userId].firstSlotId = firstSlotId;
+
+        console.log(userStates[userId]);
+
+        const timeSlots = getCachedTimeslotsCurMonth()[userStates[userId].selectedDate];
 
         const start_index = timeSlots.findIndex(el => el.getTime() > timeSlots[firstSlotId].getTime());
         const limitTime = reservedTime.findIndex(el => el.left.getTime() > timeSlots[firstSlotId].getTime());
@@ -197,30 +198,16 @@ const routes = {
 
         // Кнопки
         const buttons = possibleEnd.map((secondSlot, index) => {
-
             const buttonText = `${secondSlot.getHours()} - ${secondSlot.getMinutes()} ✅`;
-
             return {
                 text: buttonText,
-                callback_data: `book:${roomId}:${firstSlotId}:${timeSlots.findIndex(el => el.getTime() === secondSlot.getTime())}` // Другой индекс
+                callback_data: `book:${timeSlots.findIndex(el => el.getTime() === secondSlot.getTime())}` // Другой индекс
             }
-
         });
 
-        // Группируем кнопки по 3 в ряд
-        const groupedButtons = [];
-        for (let i = 0; i < buttons.length; i += 4) {
-            groupedButtons.push(buttons.slice(i, i + 4));
-        }
+        const options = groupButtons(buttons, 4);
 
-        // Опции с разметкой для Telegram
-        const options = {
-            reply_markup: {
-                inline_keyboard: groupedButtons,
-            },
-        };
-
-        bot.sendMessage(chatId, `Бронирование комнаты ${roomId}
+        bot.sendMessage(chatId, `Бронирование комнаты ${userStates[userId].roomId}
                                                                               
                                                                                                                                                                                
                                                                                                                                                                                                                               
@@ -231,196 +218,6 @@ const routes = {
     }
 }
 
-// Auth
-async function getAuthToken(userId) {
-
-    try {
-        const formData = new URLSearchParams();
-        formData.append('grant_type', 'password');
-        formData.append('username', `${userId}@bot.tg`);
-        formData.append('password', 'password');
-
-        const response = await fetch('http://127.0.0.1:8000/auth/jwt/login', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded'
-            },
-            body: formData.toString()
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            return data.access_token;
-        } else {
-            console.error('Ошибка аутентификации:', response);
-            return null;
-        }
-    } catch (error) {
-        console.error('Ошибка при получении токена аутентификации:', error);
-        return null;
-    }
-}
-
-async function getReservationsByRoom(roomId) {
-
-    const url = `http://127.0.0.1:8000/meeting_rooms/${roomId}/reservations`;
-
-    const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-    });
-    const jsonResponse = await response.json();
-
-    return jsonResponse;
-}
-
-// Занятые комнаты
-async function getReservations(access_token) {
-
-    const response = await fetch('http://127.0.0.1:8000/reservations', {
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${access_token}`,
-            'Content-Type': 'application/json'
-        }
-    });
-
-    const jsonResponse = await response.json();
-
-    return jsonResponse;
-}
-
-// Получить бронирования пользователя
-async function getUserReservations(access_token) {
-
-    const response = await fetch('http://127.0.0.1:8000/reservations/my_reservations', {
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${access_token}`,
-            'Content-Type': 'application/json'
-        }
-    });
-
-    const jsonResponse = await response.json();
-
-    return jsonResponse;
-}
-
-// 
-async function getMeetingRooms(access_token) {
-
-    const response = await fetch('http://127.0.0.1:8000/meeting_rooms', {
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${access_token}`,
-            'Content-Type': 'application/json'
-        }
-    });
-
-    const jsonResponse = await response.json();
-
-    return jsonResponse;
-}
-
-async function bookRoom(access_token, roomId, fromReserve, toReserve) {
-
-    const fromFormated = `${fromReserve.getFullYear()}-${String(fromReserve.getMonth() + 1).padStart(2, '0')}-${String(fromReserve.getDate()).padStart(2, '0')}T${String(fromReserve.getHours()).padStart(2, '0')}:${String(fromReserve.getMinutes()).padStart(2, '0')}`;
-    const minusMinute = new Date(toReserve);
-    minusMinute.setMinutes(minusMinute.getMinutes() - 1);
-    const toFormated = `${minusMinute.getFullYear()}-${String(minusMinute.getMonth() + 1).padStart(2, '0')}-${String(minusMinute.getDate()).padStart(2, '0')}T${String(minusMinute.getHours()).padStart(2, '0')}:${String(minusMinute.getMinutes()).padStart(2, '0')}`;
-    const roomIdFormated = Number(roomId);
-
-    const reqBody = {
-        from_reserve: fromFormated,
-        to_reserve: toFormated,
-        meetingroom_id: roomIdFormated
-    }
-
-    try {
-        const response = await fetch('http://127.0.0.1:8000/reservations/', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${access_token}`,
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(reqBody)
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json(); // Чтение данных об ошибке
-            console.log(JSON.stringify(errorData));
-            throw new Error(`Ошибка ${response.status}: ${errorData.message || response.statusText}`);
-        }
-
-        return await response.json();
-
-    } catch (error) {
-        console.error("Ошибка при бронировании комнаты:", error.message);
-        throw error; // Пробрасываем ошибку дальше для обработки
-    }
-}
-
-// async function deleteUser(userId) {
-
-//     const url = `http://127.0.0.1:8000/delete${userId}`
-
-//     try {
-//         const response = await fetch(url, {
-//             method: 'DELETE',
-//             headers: {
-//                 'Content-Type': 'application/json',
-//             },
-//         });
-
-//         if (!response.ok) {
-//             const errorData = await response.json(); // Чтение данных об ошибке
-//             throw new Error(`Ошибка ${response.status}: ${errorData.message || response.statusText}`);
-//         }
-//         return await response.json();
-
-//     } catch (error) {
-//         console.error("Ошибка при регистрации:", error.message);
-//         throw error; // Пробрасываем ошибку дальше для обработки
-//     }
-// }
-
-async function registerUser(userId) {
-    // Регистрация
-    const reqBody = {
-        email: `${userId}@bot.tg`,
-        password: "password",
-        is_active: true,
-        is_superuser: false,
-        is_verified: true,
-        first_name: "string",
-        birthdate: "2000-01-01"
-    }
-
-    const url = 'http://127.0.0.1:8000/auth/register/';
-
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(reqBody)
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json(); // Чтение данных об ошибке
-            throw new Error(`Ошибка ${response.status}: ${errorData.message || response.statusText}`);
-        }
-
-        return await response.json();
-
-    } catch (error) {
-        console.error("Ошибка при регистрации:", error.message);
-        throw error; // Пробрасываем ошибку дальше для обработки
-    }
-}
 
 // Команда /start
 bot.onText(/\/start/, async (msg) => {
@@ -429,17 +226,22 @@ bot.onText(/\/start/, async (msg) => {
 
     try {
         const jsonResponse = await registerUser(userId);
+        console.log("Работа с ботом успешно начата");
     } catch (error) {
         bot.sendMessage(chatId, error.message);
     }
 });
 
-
 bot.onText(/\/reserve/, async msg => {
 
     // Вывести возможные даты
     const chatId = msg.chat.id;
-    const dates = getDatesOfCurrentMonth();
+    const userId = msg.from.id;
+
+    const dates = getCachedDatesOfCurrentMonth();
+
+    initUserState(userId);
+    console.log(userStates[userId]);
 
     const buttons = dates.map((date) => {
         return {
@@ -448,18 +250,7 @@ bot.onText(/\/reserve/, async msg => {
         };
     })
 
-    // Группируем кнопки по 3 в ряд
-    const groupedButtons = [];
-    for (let i = 0; i < buttons.length; i += 4) {
-        groupedButtons.push(buttons.slice(i, i + 4));
-    }
-
-    // Опции с разметкой для Telegram
-    const options = {
-        reply_markup: {
-            inline_keyboard: groupedButtons,
-        },
-    };
+    const options = groupButtons(buttons, 4);
 
     bot.sendMessage(chatId, `
                                                                                                                                                   
@@ -468,35 +259,19 @@ bot.onText(/\/reserve/, async msg => {
     \n Выберите дату бронирования:`, options);
 });
 
-
-
-// bot.onText(/\/displayrooms/, async msg => {
-
-//     const chatId = msg.chat.id;
-//     const jsonResponse = await getMeetingRooms();
-
-//     const buttons = jsonResponse.map(item => {
-//         return [{ text: item.id + " " + item.description, callback_data: ("selFirstTime:" + item.id) }];
-//     });
-
-//     const options = {
-//         reply_markup: {
-//             inline_keyboard: buttons,
-//         },
-//     };
-
-//     await bot.sendMessage(chatId, 'Выберите комнату', options);
-// });
-
 // Нажатие inline кнопок
 bot.on('callback_query', (callbackQuery) => {
 
     const chatId = callbackQuery.message.chat.id;
     const userId = callbackQuery.from.id;
     const data = callbackQuery.data;
+    const messageId = callbackQuery.message.message_id;
+    bot.deleteMessage(chatId, messageId);
 
     const arr = data.split(':');
     const [route, ...rest] = arr;
+
+    
 
     try {
         if (routes[route]) {
@@ -524,27 +299,6 @@ function formatDateTime(dateTimeString) {
     return date.toLocaleString('ru-RU', options); // Форматируем дату и время
 }
 
-bot.onText(/\/reservations/, async (msg) => {
-
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-
-    const token = await getAuthToken(userId);
-    const reservations = await getReservations(token);
-
-    let message = "Список бронирований:\n\n";
-    reservations.forEach((reservation, index) => {
-        message += `📅 Бронирование #${index + 1}\n`;
-        message += `   📍 Комната: ${reservation.meetingroom_id}\n`;
-        message += `   🕒 С: ${formatDateTime(reservation.from_reserve)}\n`;
-        message += `   🕒 По: ${formatDateTime(reservation.to_reserve)}\n`;
-        // message += `   👤 Пользователь: ${reservation.user_id}\n`;
-        // message += `   🔖 ID бронирования: ${reservation.id}\n\n`;
-    });
-
-    await bot.sendMessage(chatId, message);
-});
-
 bot.onText(/\/mybookings/, async msg => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
@@ -554,33 +308,33 @@ bot.onText(/\/mybookings/, async msg => {
     try {
         const response = await getUserReservations(access_token);
 
+        console.log(response);
+
         const today = new Date();
         const activeReservations = response.filter((res) => {
-
             const date = new Date(res.from_reserve);
             return date.getTime() > today.getTime();
         })
 
         if (activeReservations.length === 0) {
             return bot.sendMessage(chatId, 'У вас нет активных бронирований.');
-        }
+        } else {
 
-        const buttons = activeReservations.map(res => {
-            return [{
-                text: `Комната: ${res.meetingroom_id} с ${(res.from_reserve).slice(11,16)} до ${(res.to_reserve).slice(11, 16)}`,
-                callback_data: `delbooking:${res.id}`
-            }];
-        });
+            const buttons = activeReservations.map(res => {
+                return [{
+                    text: `${res.meeting_room_name} с ${(res.from_reserve).slice(11,16)} до ${(res.to_reserve).slice(11, 16)}`,
+                    callback_data: `delbooking:${res.id}`
+                }];
+            });
 
-        const options = {
-            reply_markup: {
-                inline_keyboard: buttons,
-            },
-        };
+            const options = {
+                reply_markup: {
+                    inline_keyboard: buttons,
+                },
+            };
 
-        return bot.sendMessage(chatId, 'Нажмите на бронирование, чтобы отменить', options);
-
-        // delbooking:
+            return bot.sendMessage(chatId, 'Нажмите на бронирование, чтобы отменить', options);
+    }
 
     } catch (error) {
         bot.sendMessage(chatId, error);
@@ -604,10 +358,6 @@ const commands = [
         command: "start",
         description: "Запуск бота"
     },
-    // {
-    //     command: "displayrooms",
-    //     description: "Список аудиторий"
-    // },
     {
         command: "reserve",
         description: "Начать бронирование"
