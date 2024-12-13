@@ -1,12 +1,13 @@
 const TelegramBot = require('node-telegram-bot-api');
 
-const { token } = require('./config/config');
+require('dotenv').config();
 
 const { getAuthToken,  getReservationsByRoom, getUserReservations, 
     getReservations, getMeetingRooms, bookRoom, registerUser, deleteReservation} = require('./api/api')
 
 const {getCachedDatesOfCurrentMonth, getCachedTimeslotsCurMonth, groupButtons} = require('./utils/utils')
 
+const token = process.env.BOT_TOKEN;
 
 // Создайте экземпляр бота
 const bot = new TelegramBot(token, { polling: true });
@@ -31,9 +32,6 @@ async function initUserState(userId) {
 let reservedTime = []
 
 const routes = {
-    'back': (chatId, userId) => {
-        
-    },
     'displayrooms': async (chatId, userId, selectedYear, selectedMonth, selectedDate) => {
 
         userStates[userId].selectedYear = selectedYear;

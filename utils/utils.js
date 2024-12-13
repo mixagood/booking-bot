@@ -53,12 +53,6 @@ function groupButtons(buttons, rowLength) {
         groupedButtons.push(buttons.slice(i, i + rowLength));
     }
 
-    const backButton = {
-        text : "Назад",
-        callback_data: 'back'
-    }
-    groupedButtons.push(backButton);
-
     // Опции с разметкой для Telegram
     const options = {
         reply_markup: {
